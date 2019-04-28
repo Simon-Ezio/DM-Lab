@@ -1,0 +1,355 @@
+---
+title: "Lab_practice"
+author: "Ximu Wang"
+date: "2019/3/4"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(pROC)
+library(rsample)
+library(xgboost)
+library(ggplot2)
+library(glmnet)
+library(car)
+library(MASS)
+library(class)
+library(rpart)
+library(ROCR)
+library(caret)
+```
+## Import the data set and clean it.
+```{r}
+labdata <- read.csv("INFSCI_2160_R_LAB_DATASET.csv")
+head(labdata)
+```
+
+If the proportion of NA in some features are greater than 0.2, than we discard them, beacause they are worthless in prediction.
+```{r}
+i <- 1
+rownum <- nrow(labdata)
+while (i <= ncol(labdata)) {
+  if (sum(is.na(labdata[, c(i)]))/rownum > 0.2) labdata <- labdata[, -i] else i <- i+1
+}
+#delete ID
+labdata <- labdata[, -(i-1)]
+head(labdata)
+```
+Delete the rows that have NA data.
+```{r}
+labdata <- na.omit(labdata)
+head(labdata)
+```
+```{r}
+summary(labdata)
+```
+
+## Split the data into train set and test set.
+```{r}
+set.seed(1)
+labdata_train_test_split <- initial_split(labdata, prop = 0.75)
+train_tbl <- training(labdata_train_test_split)
+test_tbl  <- testing(labdata_train_test_split)
+```
+
+## Use logistic regression model to exclude the features that not associated with the target(P > 0.1).
+```{r}
+model_glm <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl)
+summary(model_glm)
+```
+So, we keep features "AGE_ON_CONTACT_DATE", "BMI", "EGFR_CLOSEST", "ALT_CLOSEST_F", "AST_CLOSEST_F", "FOLLOW_UP_EGFR_VALUE", "FEMALE", "RACE_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "ARB", "SGLT2_INHIBITOR" and "CA_CLOSEST_F".
+```{r}
+train_tbl <- train_tbl[, c("ESRD_FLG_COMP", "AGE_ON_CONTACT_DATE", "BMI", "EGFR_CLOSEST", "ALT_CLOSEST_F", "AST_CLOSEST_F", "FOLLOW_UP_EGFR_VALUE", "FEMALE", "RACE_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "ARB", "SGLT2_INHIBITOR", "CA_CLOSEST_F")]
+
+test_tbl <- test_tbl[, c("ESRD_FLG_COMP", "AGE_ON_CONTACT_DATE", "BMI", "EGFR_CLOSEST", "ALT_CLOSEST_F", "AST_CLOSEST_F", "FOLLOW_UP_EGFR_VALUE", "FEMALE", "RACE_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "ARB", "SGLT2_INHIBITOR", "CA_CLOSEST_F")]
+table(train_tbl$ESRD_FLG_COMP)
+```
+We can separate the features into several category: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI"), ("ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F"), ("OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F"), ("ARB", "SGLT2_INHIBITOR").
+Now we can build 7 models for prediction. We use xgboost model to build.
+```{r}
+model_table <- data.frame("model1" = c(0,0,NA), "model2" = c(0,0,NA), "model3" = c(0,0,NA), "model4" = c(0,0,NA), "model5" = c(0,0,NA), "model6" = c(0,0,NA), "model7" = c(0,0,NA))
+row.names(model_table) <- c("AUC", "AIC", "P_value")
+```
+
+## Build logistic regression model
+### Model 1: ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")
+Create dataset for Modle 1
+```{r}
+train_tbl_1 <- train_tbl[, c("ESRD_FLG_COMP", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")]
+test_tbl_1 <- test_tbl[, c("ESRD_FLG_COMP", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")]
+```
+Create Model 1
+```{r}
+model1 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_1, x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_1 <- test_tbl %>%
+  mutate(probs = predict(model1, newdata = test_tbl_1, type = "response"))
+```
+Calculate AUC.
+```{r}
+roc_1 <- roc(test_preds_1$ESRD_FLG_COMP, test_preds_1$probs)
+model1_auc <- pROC::auc(roc_1)
+ci.auc(roc_1)
+```
+```{r}
+model_table["AUC", "model1"] <- model1_auc
+```
+Calculate AIC.
+```{r}
+model1_aic <- AIC(model1)
+model_table["AIC", "model1"] <- model1_aic
+```
+
+### Model 2: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")
+Create dataset for Modle 2
+```{r}
+train_tbl_2 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")]
+test_tbl_2 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F")]
+```
+Create Model 2
+```{r}
+model2 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_2, x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_2 <- test_tbl %>%
+  mutate(xgb_probs = predict(model2, newdata = test_tbl_2, type = "response"))
+```
+Calculate AUC.
+```{r}
+roc_2 <- roc(test_preds_2$ESRD_FLG_COMP, test_preds_2$xgb_probs)
+model2_auc <- pROC::auc(roc_2)
+ci.auc(roc_2)
+```
+```{r}
+model_table["AUC", "model2"] <- model2_auc
+```
+Calculate AIC
+```{r}
+model2_aic <- AIC(model2)
+model_table["AIC", "model2"] <- model2_aic
+```
+Calculate p-value compared with model1
+```{r}
+comp_2vs1 <- anova(model1,model2,test = "Chisq")
+P_2vs1 <- comp_2vs1$`Pr(>Chi)`
+model_table["P_value", "model2"] <- P_2vs1[2]
+```
+
+### Model 3: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI")
+Create dataset for model 3.
+```{r}
+train_tbl_3 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "BMI")]
+test_tbl_3 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "BMI")]
+```
+Create model 3.
+```{r}
+model3 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_3, x = TRUE)
+```
+Predict test data
+```{r}
+test_preds_3 <- test_tbl %>%
+  mutate(xgb_probs = predict(model3, newdata = test_tbl_3, type = "response"))
+```
+Calculate AUC
+```{r}
+roc_3 <- roc(test_preds_3$ESRD_FLG_COMP, test_preds_3$xgb_probs)
+model3_auc <- pROC::auc(roc_3)
+ci.auc(roc_3)
+```
+```{r}
+model_table["AUC", "model3"] <- model3_auc
+```
+Calculate AIC
+```{r}
+model3_aic <- AIC(model3)
+model_table["AIC", "model3"] <- model3_aic
+```
+Calculate p-value compared with model2
+```{r}
+comp_3vs2 <- anova(model3,model2,test = "Chisq")
+P_3vs2 <- comp_3vs2$`Pr(>Chi)`
+model_table["P_value", "model3"] <- P_3vs2[2]
+```
+
+### Model 4: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI"), ("ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F")
+Create data set for model 4.
+```{r}
+train_tbl_4 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F", "BMI")]
+test_tbl_4 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F", "BMI")]
+```
+Create model 4.
+```{r}
+model4 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_4,  x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_4 <- test_tbl %>%
+  mutate(xgb_probs = predict(model4, newdata = test_tbl_4, type = "response"))
+```
+Calculate AUC
+```{r}
+roc_4 <- roc(test_preds_4$ESRD_FLG_COMP, test_preds_4$xgb_probs)
+model4_auc <- pROC::auc(roc_4)
+ci.auc(roc_4)
+```
+```{r}
+model_table["AUC", "model4"] <- model4_auc
+```
+Calculate AIC
+```{r}
+model4_aic <- AIC(model4)
+model_table["AIC", "model4"] <- model4_aic
+```
+Calculate p-value compared with model2
+```{r}
+comp_4vs3 <- anova(model4,model3,test = "Chisq")
+P_4vs3 <- comp_4vs3$`Pr(>Chi)`
+model_table["P_value", "model4"] <- P_4vs3[2]
+```
+
+### Model 5: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI") ("OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F")
+Create data set for model 6.
+```{r}
+train_tbl_5 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "BMI")]
+test_tbl_5 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "BMI")]
+```
+Create model 5.
+```{r}
+model5 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_5, x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_5 <- test_tbl %>%
+  mutate(xgb_probs = predict(model5, newdata = test_tbl_5, type = "response"))
+```
+Calculate AUC
+```{r}
+roc_5 <- roc(test_preds_5$ESRD_FLG_COMP, test_preds_5$xgb_probs)
+model5_auc <- pROC::auc(roc_5)
+ci.auc(roc_5)
+```
+```{r}
+model_table["AUC", "model5"] <- model5_auc
+```
+Calculate AIC
+```{r}
+model5_aic <- AIC(model5)
+model_table["AIC", "model5"] <- model5_aic
+```
+Calculate p-value compared with model2
+```{r}
+comp_5vs3 <- anova(model5,model3,test = "Chisq")
+P_5vs3 <- comp_5vs3$`Pr(>Chi)`
+model_table["P_value", "model5"] <- P_5vs3[2]
+```
+
+
+### Model 6: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI"), ("ARB", "SGLT2_INHIBITOR")
+Create data set for model 6.
+```{r}
+train_tbl_6 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "ARB", "SGLT2_INHIBITOR", "BMI")]
+test_tbl_6 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "ARB", "SGLT2_INHIBITOR", "BMI")]
+```
+Create model 6.
+```{r}
+model6 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_6, x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_6 <- test_tbl %>%
+  mutate(xgb_probs = predict(model6, newdata = test_tbl_6, type = "response"))
+```
+Calculate AUC
+```{r}
+roc_6 <- roc(test_preds_6$ESRD_FLG_COMP, test_preds_6$xgb_probs)
+model6_auc <- pROC::auc(roc_6)
+ci.auc(roc_6)
+```
+```{r}
+model_table["AUC", "model6"] <- model6_auc
+```
+Calculate AIC
+```{r}
+model6_aic <- AIC(model6)
+model_table["AIC", "model6"] <- model6_aic
+```
+Calculate p-value compared with model2
+```{r}
+comp_6vs3 <- anova(model6,model3,test = "Chisq")
+P_6vs3 <- comp_6vs3$`Pr(>Chi)`
+model_table["P_value", "model6"] <- P_6vs3[2]
+```
+
+### Model 7: ("EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE"), ("AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F"), ("BMI"), ("ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F"), ("OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F"), ("ARB", "SGLT2_INHIBITOR")
+Create data set for model 7.
+```{r}
+train_tbl_7 <- train_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "BMI", "ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "ARB", "SGLT2_INHIBITOR")]
+test_tbl_7 <- test_tbl[, c("ESRD_FLG_COMP", "EGFR_CLOSEST", "FOLLOW_UP_EGFR_VALUE", "AGE_ON_CONTACT_DATE", "FEMALE", "RACE_F", "BMI", "ALT_CLOSEST_F", "AST_CLOSEST_F", "CA_CLOSEST_F", "OSTEO_HST_F", "PSORIATIC_ARTHRITIS_HST_F", "OBS_SLEEPAPNEA_HST_F", "ANXIETY_HST_F", "ARB", "SGLT2_INHIBITOR")]
+```
+Create model 7.
+```{r}
+model7 <- glm(ESRD_FLG_COMP ~ ., family = binomial, data = train_tbl_7, x = TRUE)
+```
+Predict test data.
+```{r}
+test_preds_7 <- test_tbl %>%
+  mutate(xgb_probs = predict(model7, newdata = test_tbl_7, type = "response"))
+```
+Calculate AUC
+```{r}
+roc_7 <- roc(test_preds_7$ESRD_FLG_COMP, test_preds_7$xgb_probs)
+model7_auc <- pROC::auc(roc_7)
+ci.auc(roc_7)
+```
+```{r}
+model_table["AUC", "model7"] <- model7_auc
+```
+Calculate AIC
+```{r}
+model7_aic <- AIC(model7)
+model_table["AIC", "model7"] <- model7_aic
+```
+Calculate p-value compared with model2
+```{r}
+comp_7vs3 <- anova(model7,model3,test = "Chisq")
+P_7vs3 <- comp_7vs3$`Pr(>Chi)`
+model_table["P_value", "model7"] <- P_7vs3[2]
+```
+## Model performance
+### Validation table.
+```{r}
+model_table
+```
+From the table we can tell Model 2, Model 4 and Model 7 are good model. Now use NRI to compare these three models.
+
+#### At stage 3.
+```{r}
+library(nricens)
+
+NRI3_4vs2 <- nribin(mdl.std = model2, mdl.new = model4, updown = 'category',cut = c(0.05,0.15), niter = 0, alpha = 0.05)
+NRI3_7vs2 <- nribin(mdl.std = model2, mdl.new = model7, updown = 'category',cut = c(0.05,0.15), niter = 0, alpha = 0.05)
+NRI3_7vs4 <- nribin(mdl.std = model4, mdl.new = model7, updown = 'category',cut = c(0.05,0.15), niter = 0, alpha = 0.05)
+```
+#### At stage 4.
+```{r}
+NRI3_4vs2 <- nribin(mdl.std = model2, mdl.new = model4, updown = 'category',cut = c(0.10,0.20), niter = 0, alpha = 0.05)
+NRI3_7vs2 <- nribin(mdl.std = model2, mdl.new = model7, updown = 'category',cut = c(0.10,0.20), niter = 0, alpha = 0.05)
+NRI3_7vs4 <- nribin(mdl.std = model4, mdl.new = model7, updown = 'category',cut = c(0.10,0.20), niter = 0, alpha = 0.05)
+```
+So we can see model 4 has an NRI of 0.0057 and 0.01, model 4 is the best model.
+
+
+
+
+
+
